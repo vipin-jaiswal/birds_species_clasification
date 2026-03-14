@@ -1,0 +1,125 @@
+import tensorflow as tf
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Input
+from tensorflow.keras.optimizers import Adam
+import numpy as np
+import os
+from PIL import Image
+import cv2
+
+# Define paths
+base_dir = r'E:/Project/bird/100 sepices/100-bird-species'
+train_dir = os.path.join(base_dir, 'train')
+valid_dir = os.path.join(base_dir, 'valid')
+test_dir = os.path.join(base_dir, 'test')
+
+# Remove invalid images
+def remove_invalid_images(image_dir):
+    for folder in ['train', 'valid', 'test']:
+        species_dir = os.path.join(image_dir, folder)
+        for species in os.listdir(species_dir):
+            species_path = os.path.join(species_dir, species)
+            if os.path.isdir(species_path):
+                for filename in os.listdir(species_path):
+                    image_path = os.path.join(species_path, filename)
+                    try:
+                        img = Image.open(image_path)
+                        img.verify()
+                    except (IOError, SyntaxError) as e:
+                        print(f"Removing invalid image: {image_path}")
+                        os.remove(image_path)
+
+remove_invalid_images(base_dir)
+
+# Load datasets with consistent image size
+image_size = (224, 224)
+batch_size = 32
+
+train_dataset = tf.keras.utils.image_dataset_from_directory(
+    train_dir,
+    label_mode='categorical',
+    image_size=image_size,
+    batch_size=batch_size,
+    shuffle=True,
+    seed=123
+)
+
+validation_dataset = tf.keras.utils.image_dataset_from_directory(
+    valid_dir,
+    label_mode='categorical',
+    image_size=image_size,
+    batch_size=batch_size,
+    shuffle=True
+)
+
+test_dataset = tf.keras.utils.image_dataset_from_directory(
+    test_dir,
+    label_mode='categorical',
+    image_size=image_size,
+    batch_size=batch_size,
+    shuffle=False
+)
+
+# Data augmentation
+data_augmentation = tf.keras.Sequential([
+    tf.keras.layers.RandomFlip('horizontal'),
+    tf.keras.layers.RandomRotation(0.2),
+    tf.keras.layers.RandomZoom(0.2),
+])
+
+# Preprocess input for VGG16
+def preprocess_input(x):
+    x = x / 255.0  # Normalize to [0, 1]
+    return x
+
+train_dataset = train_dataset.map(lambda x, y: (data_augmentation(preprocess_input(x)), y))
+validation_dataset = validation_dataset.map(lambda x, y: (preprocess_input(x), y))
+test_dataset = test_dataset.map(lambda x, y: (preprocess_input(x), y))
+
+# Build model with VGG16
+base_model = VGG16(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+base_model.trainable = False  # Freeze base model layers
+
+inputs = Input(shape=(224, 224, 3))
+x = base_model(inputs, training=False)
+x = GlobalAveragePooling2D()(x)
+x = Dense(1024, activation='relu')(x)
+outputs = Dense(265, activation='softmax')(x)  # 265 bird species
+model = Model(inputs, outputs)
+
+# Compile model
+model.compile(optimizer=Adam(learning_rate=0.0001),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+# Train model
+history = model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=10
+)
+
+# Evaluate model
+test_loss, test_acc = model.evaluate(test_dataset)
+print(f"Test accuracy: {test_acc}")
+
+# Save model
+model.save('bird_species_model.h5')
+
+# Function to predict bird species from an image
+def predict_bird_species(image_path, model, class_names):
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, image_size)
+    img = np.expand_dims(img, axis=0) / 255.0  # Normalize and add batch dimension
+    prediction = model.predict(img)
+    predicted_class = np.argmax(prediction, axis=1)[0]
+    return class_names[predicted_class]
+
+# Get class names
+class_names = train_dataset.class_names
+
+# Example usage
+# image_path = 'path/to/your/bird_image.jpg'
+# bird_name = predict_bird_species(image_path, model, class_names)
+# print(f"Predicted bird species: {bird_name}")
